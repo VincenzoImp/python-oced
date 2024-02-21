@@ -1,66 +1,128 @@
-# 1. problema dei sottoeventi
-## (risolto divinamente e implementato)
-possono essere creati dei sottoeventi da pushare in un unico evento 
-ma questo potrebbe comportare problemi di incompatibilita' tra la seguenza di sottoeventi e quindi calcolare tutta la correttezza della sequenza di sottoeventi e fare revert nel caso ci sia un errore
-per carita' e' implementable facilmente perche tanto se si crea un errore si cancellano facilmente tutte le operazioni di tutti i sottoeventi prima 
-questa potrebbe essere a mio parere la soluzione migliore. ovvero tutte le create, modify, delete possono essere singoli eventi o sottoeventi di un evento piu' grande che contiene tutti i sottoeventi
-cosi risulta tutto flessibile e componibile
-il problema e' che si genera una profondita' di eventi che potrebbe essere problematica per la gestione di un evento
+# python-oced
 
-# 2. problema dell'ordine e dello storico dei qualifier nello stesso evento
-## (al momento gestito archiviando l'intero storico dei qualifier dell'evento eseguendoli tutti e mantenendo l'ordine, permettendo qualsiasi composizione valida di qualifiers)
-con la soluzione implementata nel caso di un create object 1, delete object 1 e create object 1, avremo che object 1 e' coinvolto nell'evento 3 volte distinte due create e una delete nell'ordine sopracitato riuscendo a capire a posteriori l'effettivo ordine degli eventi  
+A single-module Python library for recording Object-Centric Event Data (OCED)
+in memory. OCED is an event data model in which one event can create, change or
+refer to several objects, their relations and their attribute values, instead
+of belonging to a single case. It was written for university work in process
+mining.
 
-# 3. object_attribute_values 
-## (al momento non ho coinvolto name come parte della chiave)
-key: object_attribute_value_id, object_id # maybe also name
-perche' altrimenti si potrebbe avere due attributi con value_id diversi ma con lo stesso nome e valore
-permettendo si comunque di distinguerli ma risulta difficile per l'umano discriminare tra i due
+## What it models
 
-# 4. type of attribute values
-## (questo va sistemato, vanno consentiti i seguenti valori [str, int, float, bool, None] e non solo str)
-i value di object e event volendo potrebbero essere di tipo str, int, float, bool, None e non solo e unicamente str.
-qui si pone il problema che la colonna type non ha un tipo unico e il qualifier modify potrebbe cambiare il valore di un attributo da un tipo ad un altro. forse in realta' e' meglio archiviare tutto sottoforma di stringhe, ovvero obbligare l'utente a passare solo stringhe.
-non sollo, diventa piu' articoltato fare dump e load. al momento ho gestito facilmente tutti i valori come stringhe tranne gli existency come bool e event_id e qualifier_index come int. ovvero tutte e sole le variabili che non inserisce lutente.
+Everything lives in `OCED.py`.
 
-# 5. current state or history
-## (implementato il current state)
-dubbio relativo ad archiviare nella parte destra solo lo stato corrente del sistema o tutto lo storico.
-meglio la prima opzione siccome tutto lo storico e' archiviato implicitamente nella parte sinistra.
-ma in realta' non e' vero perche' nella parte sinistra ad esempio non posso vedere come variano i valori degli attibuti della parte destra. si potremme storare anche questa informazione sulla parte sinistra ma non diventa flessibile e modulare e si appesantisce inutilmente la parte sinistra delegando a lei una funzione non pianificata cosi'.
-meglio implementare la history sulla parte destra.
-occorre quindi per ogni object, object_attribute_value, object_relation mantenere in memoria una variabile alive booleana.
-il problema pero' e' che cosi' vengono meno i vincoli dell'esistenza di nomi di attributi che persistono nel database anche se gli oggetti vengono eliminati
+- `OCED` is the model. It holds a set of pandas DataFrames (`event`,
+  `event_type`, `event_time`, `event_attribute_name`, `event_attribute_value`,
+  `object`, `object_type`, `object_attribute_name`, `object_attribute_value`,
+  `object_relation`, `object_relation_type`, `event_x_object`,
+  `event_x_object_relation`, `event_x_object_attribute_value`), a `log` of the
+  qualifiers applied per event, a `current_state` dictionary and an
+  `event_counter`. Events are added with `insert_event(event)`.
+- `Event(event_time, event_type, qualifiers=[], event_attributes={})` is one
+  event. `event_time` is an ISO 8601 string, `event_attributes` maps strings to
+  strings, and `qualifiers` is the ordered list of changes the event makes.
+- Qualifiers are the changes. Each kind exists for objects, object relations
+  and object attribute values:
+  - `create_object(object_id, object_type)`,
+    `create_object_relation(object_relation_id, from_object_id, to_object_id, object_relation_type)`,
+    `create_object_attribute_value(object_attribute_value_id, object_id, object_attribute_name, object_attribute_value)`
+  - `modify_object(object_id, new_object_type)`,
+    `modify_object_relation(object_relation_id, new_object_relation_type)`,
+    `modify_object_attribute_value(object_attribute_value_id, new_object_attribute_value)`
+  - `delete_object(object_id)`, `delete_object_relation(object_relation_id)`,
+    `delete_object_attribute_value(object_attribute_value_id)`
+  - `involve_object(object_id)`, `involve_object_relation(object_relation_id)`,
+    `involve_object_attribute_value(object_attribute_value_id)`, which link an
+    existing item to the event without changing it.
 
-# 6. implementare il qualifier add che porta in vita un oggetto eliminato con il qualifier delete
-siccome ho assunto che non si puo' fare create su un oggetto precedentemente creato e poi eliminato per farlo tornare in vita
+Behaviour, as implemented:
 
-# 7 non permettere la modifica a vuoto usando inutilmente i modify qualifiers
-implementato da un qualifier al suo successivo non da un evento all'altro e non da un qualifier ad index x ad un qualifier ad index x+y con y>1
-nota che solo per modify e' possibile avere due righe uguali nelle tabelle event_x_* quando faccio ad esempio modifica in 2 modifica in 1 modifica in 2
-si potrebbe aggiungere il vincolo che da pre e post evento il valore deve essere modificato per davvero non solo a singoli step 
+- All identifiers, types, names and values must be strings.
+- Each event must be later than the previous one.
+- The qualifiers of an event are first applied to a copy of the current state;
+  the tables change only if all of them pass.
+- Deletion is a flag: the item is marked as no longer existing and a new row
+  with existency `False` is appended. Deleting an object also marks its
+  relations and attribute values as deleted. A deleted id cannot be created
+  again.
+- Modify, delete and involve need an existing item. A modify must change the
+  value, and a relation cannot point from an object to itself.
+- The tables are append-only, so they keep the full history; `current_state`
+  holds the latest state of every object, relation and attribute value.
 
-# 8. permetto di modificare solo se gli id hanno existency == True
-implementato cosi'
+`dump_json(file_name, model)` / `load_json(file_name)` and
+`dump_xml(file_name, model)` / `load_xml(file_name)` save and restore a model.
 
-# 9. permettere di fare get degli attributi di tutti gli oggetti e non potermi modificare in nessun modo eccetto con la reflection
-implementato cosi' e quindi ad ogni get ho messo .deepcopy
+## Use
 
-# 10. posso avere eventi che non hanno nessun qualifier? eventi non correlati a nessun object, object_relation, object_attribute_value
-al momento questa cosa e; consentita percvhe' la lista qualifiers dentro event non ha il vincolo di essere diversa da lista vuota
-e' giusto cosi perche' un eveto potrebbe anche non voler coinvolgere nessun evento con nessun qualifier 
+There is no package and nothing on PyPI. Copy `OCED.py` next to your code, or
+add its folder to `PYTHONPATH`, and import it. It needs `pandas` and
+`typing_extensions`; `dump_xml` also needs `lxml`.
 
-# 11. from object id e to object id devono essere differenti 
-implementato cosi'
+```bash
+pip install pandas typing_extensions lxml
+```
 
+```python
+from OCED import (OCED, Event, create_object, create_object_relation,
+                  create_object_attribute_value, modify_object_attribute_value,
+                  delete_object)
 
+model = OCED()
 
-# TODO
-- gestire l'eliminazione di un oggetto secondo le regole della call for application
-ad esempio se elimino un oggetto elimino anche i suoi attributi e tutte le sue relazioni (forse... ricontrolla l'articolo) 
-elimino pero' anche tutti i suoi oggetti figli 
+model.insert_event(Event('2024-01-10T09:00:00', 'place_order', [
+    create_object('c1', 'Customer'),
+    create_object('o1', 'Order'),
+    create_object_relation('r1', 'c1', 'o1', 'places'),
+    create_object_attribute_value('a1', 'o1', 'status', 'open'),
+], {'channel': 'web'}))
 
+model.insert_event(Event('2024-01-11T14:30:00', 'pay_order', [
+    modify_object_attribute_value('a1', 'paid'),
+]))
 
+model.insert_event(Event('2024-01-12T08:00:00', 'cancel_order', [
+    delete_object('o1'),
+]))
 
-- permettere la creazione di relationship anche quando uno dei due oggetti non esiste se questo oggetto in questione e' il figlio di quelo che esiste, 
-cosi' facendo l'ogetto figlio viene creato al volo senza il qualifier opportuno e il type dell'oggetto e' 'CHILD_OF_{type dell'oggetto padre}'
+print(model.object_attribute_value.to_string())
+print(model.current_state['object']['o1'])
+```
+
+Output:
+
+```
+  object_attribute_value_id object_id object_attribute_name object_attribute_value object_attribute_value_existency
+0                        a1        o1                status                   open                             True
+1                        a1        o1                status                   paid                             True
+2                        a1        o1                status                   paid                            False
+{'type': 'Order', 'existency': False, 'object_relation_ids': ['r1'], 'object_attribute_value_ids': ['a1']}
+```
+
+## Repository contents
+
+- `OCED.py`: the library.
+- `test.ipynb`: a notebook that walks through building a model step by step.
+- `OCED_model.json`, `OCED_model.xml`: example exports.
+- `NOTE.md`: design notes and open questions, in Italian.
+- `LICENSE`: MIT.
+
+## Status and limits
+
+This is study code. There are no automated tests and no
+packaging. Known limits:
+
+- Attribute values are strings only.
+- All data is held in memory.
+- The properties of `OCED` return the internal DataFrames and dictionaries
+  directly; changing them changes the model.
+- Some validation errors raise `AttributeError` or `KeyError` instead of a
+  clear `ValueError` (for example, creating an id that already exists, or an
+  attribute value for an unknown object).
+- A model loaded with `load_json` cannot take new events if one of its tables
+  was empty when it was saved.
+
+Project page: https://vincenzo.imperati.dev/projects/python-oced
+
+## Licence
+
+MIT. See `LICENSE`.
